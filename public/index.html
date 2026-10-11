@@ -53,7 +53,7 @@ h1{font-size:22px}
 .keybox{display:flex;gap:8px;align-items:center;background:#0d1019;border:1px dashed var(--line);border-radius:10px;padding:10px 12px;margin-top:8px}
 .keybox code{flex:1;overflow:auto;white-space:nowrap;font-size:13px;color:#9fd1ff}
 .sys{display:flex;flex-direction:column;gap:12px}
-.sys.fire{border-top:3px solid var(--fire)}.sys.security{border-top:3px solid var(--sec)}
+.sys.fire{border-top:3px solid var(--fire)}.sys.security{border-top:3px solid var(--sec)}.sys.sprinkler{border-top:3px solid #00c3ff}
 .sysh{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
 .metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;background:#0d1019;border-radius:10px;padding:12px;font-size:12px}
 .metrics span{color:var(--dim)}.metrics b{text-align:right}
@@ -69,6 +69,8 @@ h1{font-size:22px}
 .btn.blue-act:hover{background:#4da3ff;color:#000}
 .btn.ok-act{background:#0e301e;border-color:#2be28a;color:#85ffc2}
 .btn.ok-act:hover{background:#2be28a;color:#000}
+.btn.sprinkler-act{background:#0b253a;border-color:#00c3ff;color:#7ee3ff;font-weight:700}
+.btn.sprinkler-act:hover{background:#00c3ff;color:#000}
 .sec-title{font-size:13px;font-weight:700;color:var(--dim);letter-spacing:.8px;text-transform:uppercase;margin:28px 0 12px}
 table{width:100%;border-collapse:collapse;font-size:12px}
 th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line)}
@@ -82,9 +84,9 @@ th{color:var(--dim);font-weight:600;position:sticky;top:0;background:var(--panel
 .modal .card{width:520px;max-width:100%;max-height:92vh;overflow:auto}
 .steps{display:flex;gap:6px;margin-bottom:16px}.steps i{flex:1;height:4px;border-radius:4px;background:var(--line)}.steps i.on{background:var(--accent)}
 pre{background:#080a10;border:1px solid var(--line);border-radius:10px;padding:14px;font-size:12px;overflow:auto;color:#9fd1ff;white-space:pre-wrap}
-.typegrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.typegrid{display:grid;grid-template-columns:repeat(3, 1fr);gap:10px}
 .typeopt{border:2px solid var(--line);border-radius:12px;padding:14px;text-align:center;cursor:pointer;background:var(--panel2);color:var(--text)}
-.typeopt.on.fire{border-color:var(--fire)}.typeopt.on.security{border-color:var(--sec)}
+.typeopt.on.fire{border-color:var(--fire)}.typeopt.on.security{border-color:var(--sec)}.typeopt.on.sprinkler{border-color:#00c3ff}
 .typeopt div{font-size:26px}
 .toast{position:fixed;bottom:22px;right:22px;background:#1e2538;border:1px solid var(--line);padding:12px 18px;border-radius:10px;z-index:99;font-size:13px}
 </style>
@@ -217,17 +219,20 @@ function toggleAll(){showAll=!showAll;$('allBtn').textContent=showAll?'Show only
 async function loadDash(){
   try{const d=await api('/facilities'+(showAll?'?all=1':''));const g=$('facGrid');
     if(!d.facilities.length){g.innerHTML=`<div class="card empty" style="grid-column:1/-1"><h2>No facilities yet</h2><p>Create your first facility to get an API key and start monitoring.</p><br><button class="btn primary" onclick="openWizard()">+ Create facility</button></div>`;return}
-    g.innerHTML=d.facilities.map(f=>{const fire=f.systems.filter(s=>s.type==='FIRE').length,sec=f.systems.length-fire;
+    g.innerHTML=d.facilities.map(f=>{
+      const fire=f.systems.filter(s=>s.type==='FIRE').length;
+      const spr=f.systems.filter(s=>s.type==='SPRINKLER').length;
+      const sec=f.systems.filter(s=>s.type==='SECURITY').length;
       return `<div class="card fac" onclick="go('#/f/${f.facility_id}')"><div style="display:flex;justify-content:space-between;gap:8px"><h3>${esc(f.name)}</h3>${f.blacklisted?'<span class="pill bad">BLACKLISTED</span>':f.online?'<span class="pill ok"><i class="dot"></i>ONLINE</span>':'<span class="pill"><i class="dot"></i>OFFLINE</span>'}</div>
       <div class="sub mono">${f.facility_id} • Place ${esc(f.site_id)}${f.my_role==='owner'?' • yours':' • '+esc(f.owner)+' ('+f.my_role+')'}</div>
-      <div style="margin-top:14px;display:flex;gap:8px"><span class="pill">🔥 ${fire} fire</span><span class="pill">🛡️ ${sec} security</span></div></div>`}).join('')
+      <div style="margin-top:14px;display:flex;gap:8px"><span class="pill">🔥 ${fire} fire</span>${spr?`<span class="pill">🌊 ${spr} sprinkler</span>`:''}<span class="pill">🛡️ ${sec} security</span></div></div>`}).join('')
   }catch(e){}
 }
 
 /* ---------- facility page ---------- */
 function sysCard(s){
-  const st=s.state||{},fire=s.type==='FIRE',lvl=LV[curFac.my_role]||0;
-  const bad=fire?(st.status&&st.status!=='NORMAL'):(st.status&&st.status.startsWith('ALARM'));
+  const st=s.state||{},fire=s.type==='FIRE',spr=s.type==='SPRINKLER',sec=s.type==='SECURITY',lvl=LV[curFac.my_role]||0;
+  const bad=fire?(st.status&&st.status!=='NORMAL'):spr?((st.status&&st.status!=='NORMAL')||(st.flowingHeads||0)>0||(st.pressure!=null&&st.pressure<80)):(st.status&&st.status.startsWith('ALARM'));
   let ctlHtml = '';
   if (lvl >= 2) {
     if (fire) {
@@ -248,6 +253,17 @@ function sysCard(s){
             <button class="btn sm warn-act" onclick="sendCmd('${s.system_id}','ALARM_SILENCE')">🔕 Silence Horns</button>
             <button class="btn sm blue-act" onclick="sendCmd('${s.system_id}','SYSTEM_RESET')">🔄 System Reset</button>
             <button class="btn sm" onclick="sendCmd('${s.system_id}','LAMP_TEST')">💡 Lamp Test</button>
+          </div>
+        </div>
+        <div class="ctl-sec">
+          <div class="ctl-lbl">Sprinkler Interlink (Requires Panel Sync)</div>
+          <div class="sub" style="margin-bottom:6px;font-size:11px;color:var(--dim)">Only active if Sync_With_SafeLight_Simplex_4100U is true in game</div>
+          <div class="ctl-grid">
+            <button class="btn sm fire-act" onclick="sendCmd('${s.system_id}','SPRINKLER_TEST_FLOW')">🌊 Test Waterflow</button>
+            <button class="btn sm ok-act" onclick="sendCmd('${s.system_id}','SPRINKLER_ACK')">🔔 Ack Sprinkler</button>
+            <button class="btn sm blue-act" onclick="sendCmd('${s.system_id}','SPRINKLER_RESET')">🔄 Reset Interlink</button>
+            <button class="btn sm warn-act" onclick="sendCmd('${s.system_id}','SPRINKLER_DRAIN')">🚰 Drain Riser</button>
+            <button class="btn sm sprinkler-act" onclick="sendCmd('${s.system_id}','SPRINKLER_REFILL')">💧 Refill City Main</button>
           </div>
         </div>
         <div class="ctl-sec">
@@ -281,6 +297,29 @@ function sysCard(s){
           </div>
         </div>
       `;
+    } else if (spr) {
+      ctlHtml = `
+        <div class="ctl-sec">
+          <div class="ctl-lbl">Sprinkler Operations & Flow</div>
+          <div class="ctl-grid">
+            <button class="btn sm fire-act" onclick="sendCmd('${s.system_id}','SPRINKLER_TEST_FLOW')">🌊 Flow Switch Test</button>
+            <button class="btn sm ok-act" onclick="sendCmd('${s.system_id}','SPRINKLER_ACK')">🔔 Acknowledge Alarm</button>
+            <button class="btn sm blue-act" onclick="sendCmd('${s.system_id}','SPRINKLER_RESET')">🔄 System Reset</button>
+            <button class="btn sm warn-act" onclick="sendCmd('${s.system_id}','SPRINKLER_DRAIN')">🚰 Drain Main Riser</button>
+            <button class="btn sm sprinkler-act" onclick="sendCmd('${s.system_id}','SPRINKLER_REFILL')">💧 Refill City Water</button>
+          </div>
+        </div>
+        <div class="ctl-sec">
+          <div class="ctl-lbl">OS&Y Valve Supervisory Controls</div>
+          <div class="ctl-grid">
+            <button class="btn sm" onclick="sendCmd('${s.system_id}','SPRINKLER_TOGGLE_OSY1')">🔧 OS&Y #1 (Main)</button>
+            <button class="btn sm" onclick="sendCmd('${s.system_id}','SPRINKLER_TOGGLE_OSY2')">🔧 OS&Y #2 (Flr 1)</button>
+            <button class="btn sm" onclick="sendCmd('${s.system_id}','SPRINKLER_TOGGLE_OSY3')">🔧 OS&Y #3 (Flr 2)</button>
+            <button class="btn sm" onclick="sendCmd('${s.system_id}','SPRINKLER_TOGGLE_OSY4')">🔧 OS&Y #4 (Flr 3)</button>
+            <button class="btn sm" onclick="sendCmd('${s.system_id}','SPRINKLER_TOGGLE_OSY5')">🔧 OS&Y #5 (Aux)</button>
+          </div>
+        </div>
+      `;
     } else {
       ctlHtml = `
         <div class="ctl-sec">
@@ -305,10 +344,19 @@ function sysCard(s){
   } else {
     ctlHtml = '<div class="sub" style="padding:6px 0">View-only access (operator role required)</div>';
   }
-  return `<div class="card sys ${fire?'fire':'security'}"><div class="sysh"><div><b>${fire?'🔥':'🛡️'} ${esc(s.name)}</b><div class="sub mono" style="margin-top:3px">System ID: ${s.system_id}</div></div>
+  const typeClass = fire ? 'fire' : spr ? 'sprinkler' : 'security';
+  const typeIcon = fire ? '🔥' : spr ? '🌊' : '🛡️';
+  let metricsHtml = '';
+  if (fire) {
+    metricsHtml = `<span>Status</span><b style="color:${bad?'var(--fire)':'var(--ok)'}">${esc(st.status||'NO DATA')}</b><span>Active alarms</span><b>${st.alarms||0}</b><span>AC power</span><b>${st.acPower===false?'BATTERY':'NORMAL'}</b>`;
+  } else if (spr) {
+    metricsHtml = `<span>Status</span><b style="color:${bad?'var(--fire)':'var(--ok)'}">${esc(st.status||'NORMAL')}</b><span>Water Pressure</span><b>${st.pressure!=null?st.pressure:120} PSI</b><span>Flowing Heads</span><b style="color:${(st.flowingHeads||0)>0?'var(--fire)':'var(--text)'}">${st.flowingHeads||0}</b><span>Riser Main</span><b>${(st.pressure||0)>0?'CHARGED':'DRAINED'}</b>`;
+  } else {
+    metricsHtml = `<span>Status</span><b style="color:${bad?'var(--fire)':'var(--ok)'}">${esc(st.status||'NO DATA')}</b><span>Alarmed zone</span><b>${st.zone?'Zone '+st.zone:'None'}</b>`;
+  }
+  return `<div class="card sys ${typeClass}"><div class="sysh"><div><b>${typeIcon} ${esc(s.name)}</b><div class="sub mono" style="margin-top:3px">System ID: ${s.system_id}</div></div>
     ${s.online?'<span class="pill ok"><i class="dot"></i>ONLINE</span>':'<span class="pill"><i class="dot"></i>OFFLINE</span>'}</div>
-    <div class="metrics"><span>Status</span><b class="${bad?'':''}" style="color:${bad?'var(--fire)':'var(--ok)'}">${esc(st.status||'NO DATA')}</b>
-    ${fire?`<span>Active alarms</span><b>${st.alarms||0}</b><span>AC power</span><b>${st.acPower===false?'BATTERY':'NORMAL'}</b>`:`<span>Alarmed zone</span><b>${st.zone?'Zone '+st.zone:'None'}</b>`}</div>
+    <div class="metrics">${metricsHtml}</div>
     ${ctlHtml}
     <div style="display:flex;justify-content:space-between;margin-top:8px"><button class="btn sm" onclick="copy('${s.system_id}')">Copy system ID</button>${lvl>=3?`<button class="btn sm danger" onclick="delSystem('${s.system_id}')">Remove</button>`:''}</div></div>`;
 }
@@ -324,8 +372,8 @@ async function loadFacility(id,quiet){
     $('keyCard').classList.toggle('hidden',!f.api_key);
     if(f.api_key)$('keyText').textContent=keyShown?f.api_key:'•'.repeat(28);
     $('blBtn').classList.toggle('hidden',!me.admin);$('blBtn').textContent=f.blacklisted?'Lift blacklist':'Blacklist';
-    $('sysGrid').innerHTML=f.systems.length?f.systems.map(sysCard).join(''):`<div class="card empty" style="grid-column:1/-1"><h2>No systems yet</h2><p>Add a fire alarm or security system to get its system ID.</p></div>`;
-    $('logFilters').innerHTML=['ALL','FIRE','SECURITY','ADMIN'].map(t=>`<button class="btn sm ${t===logType?'on':''}" onclick="setLog('${t}')">${t}</button>`).join('');
+    $('sysGrid').innerHTML=f.systems.length?f.systems.map(sysCard).join(''):`<div class="card empty" style="grid-column:1/-1"><h2>No systems yet</h2><p>Add a fire alarm, sprinkler, or security system to get its system ID.</p></div>`;
+    $('logFilters').innerHTML=['ALL','FIRE','SPRINKLER','SECURITY','ADMIN'].map(t=>`<button class="btn sm ${t===logType?'on':''}" onclick="setLog('${t}')">${t}</button>`).join('');
     loadLogs();
   }catch(e){if(!quiet){toast(e.message);go('')}}
 }
@@ -364,18 +412,25 @@ let wizType='FIRE';
 function wizSystemStep(){wizType='FIRE';showModal(`${steps(2)}<h2>Add your first system</h2><div class="sub">Facility <b>${esc(wizFac.name)}</b> created. Now add a system to get its system ID.</div>${typePicker()}
   <label>System name</label><input id="sName" placeholder="Main fire alarm panel"><div class="err" id="wErr"></div>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">Skip for now</button><button class="btn primary" onclick="wizAddSystem()">Create system</button></div>`)}
-function typePicker(){return `<label>System type</label><div class="typegrid"><button type="button" id="tFire" class="typeopt fire on" onclick="pickType('FIRE')"><div>🔥</div>Fire alarm</button><button type="button" id="tSec" class="typeopt security" onclick="pickType('SECURITY')"><div>🛡️</div>Security</button></div>`}
-function pickType(t){wizType=t;$('tFire').classList.toggle('on',t==='FIRE');$('tSec').classList.toggle('on',t==='SECURITY')}
+function typePicker(){return `<label>System type</label><div class="typegrid">
+  <button type="button" id="tFire" class="typeopt fire ${wizType==='FIRE'?'on':''}" onclick="pickType('FIRE')"><div>🔥</div>Fire alarm</button>
+  <button type="button" id="tSpr" class="typeopt sprinkler ${wizType==='SPRINKLER'?'on':''}" onclick="pickType('SPRINKLER')"><div>🌊</div>Sprinkler</button>
+  <button type="button" id="tSec" class="typeopt security ${wizType==='SECURITY'?'on':''}" onclick="pickType('SECURITY')"><div>🛡️</div>Security</button>
+</div>`}
+function pickType(t){wizType=t;$('tFire').classList.toggle('on',t==='FIRE');$('tSpr').classList.toggle('on',t==='SPRINKLER');$('tSec').classList.toggle('on',t==='SECURITY')}
 async function wizAddSystem(){try{const d=await api(`/facilities/${wizFac.facility_id}/systems`,'POST',{type:wizType,name:$('sName').value});showResult(wizFac.api_key,d.system,true)}catch(e){$('wErr').textContent=e.message}}
 function showResult(apiKey,sys,wiz){
-  const snip=`WebCentralStation = {\n    ${sys.type==='FIRE'?'SystemID':'SecuritySystemID'} = "${sys.system_id}",\n    APIKey = "${apiKey}",\n}`;
-  showModal(`${wiz?steps(3):''}<h2>✅ ${esc(sys.name)} is ready</h2><div class="sub">Paste these two values into your Roblox config script (<span class="mono">Simplex_Config</span> &rarr; WebCentralStation). No portal URL or facility ID needed.</div>
+  let keyName = 'SystemID', cfgName = 'Simplex_Config';
+  if (sys.type === 'SECURITY') { keyName = 'SecuritySystemID'; cfgName = 'Security_Config'; }
+  else if (sys.type === 'SPRINKLER') { keyName = 'SprinklerSystemID'; cfgName = 'Sprinkler_Config'; }
+  const snip=`WebCentralStation = {\n    ${keyName} = "${sys.system_id}",\n    APIKey = "${apiKey}",\n}`;
+  showModal(`${wiz?steps(3):''}<h2>✅ ${esc(sys.name)} is ready</h2><div class="sub">Paste these two values into your Roblox config script (<span class="mono">${cfgName}</span> &rarr; WebCentralStation). No portal URL or facility ID needed.</div>
   <label>System ID</label><div class="keybox"><code>${sys.system_id}</code><button class="btn sm" onclick="copy('${sys.system_id}')">Copy</button></div>
   <label>Facility API key</label><div class="keybox"><code>${apiKey||'(open the facility page as the owner)'}</code>${apiKey?`<button class="btn sm" onclick="copy('${apiKey}')">Copy</button>`:''}</div>
   <label>Config snippet</label><pre>${esc(snip)}</pre>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="copy(${esc(JSON.stringify(JSON.stringify(snip)))})">Copy snippet</button><button class="btn primary" onclick="finishWiz()">${wiz?'Open facility':'Done'}</button></div>`)}
 function finishWiz(){const f=wizFac;wizFac=null;$('modal').classList.add('hidden');if(f)go('#/f/'+f.facility_id);else loadFacility(curFac.facility_id,true)}
-function openAddSystem(){showModal(`<h2>Add system</h2>${typePicker()}<label>System name</label><input id="sName" placeholder="e.g. East wing panel"><div class="err" id="wErr"></div>
+function openAddSystem(){showModal(`<h2>Add system</h2>${typePicker()}<label>System name</label><input id="sName" placeholder="e.g. Main sprinkler riser"><div class="err" id="wErr"></div>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="addSystem()">Create system</button></div>`);wizType='FIRE'}
 async function addSystem(){try{const d=await api(`/facilities/${curFac.facility_id}/systems`,'POST',{type:wizType,name:$('sName').value});showResult(curFac.api_key,d.system,false)}catch(e){$('wErr').textContent=e.message}}
 

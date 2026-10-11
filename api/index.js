@@ -221,7 +221,24 @@ const COMMANDS = {
         'SIREN_ATTACK',
         'SIREN_HILO',
         'SIREN_TEST',
-        'SIREN_CANCEL'
+        'SIREN_CANCEL',
+        'SPRINKLER_DRAIN',
+        'SPRINKLER_REFILL',
+        'SPRINKLER_RESET',
+        'SPRINKLER_ACK',
+        'SPRINKLER_TEST_FLOW'
+    ],
+    SPRINKLER: [
+        'SPRINKLER_DRAIN',
+        'SPRINKLER_REFILL',
+        'SPRINKLER_RESET',
+        'SPRINKLER_ACK',
+        'SPRINKLER_TEST_FLOW',
+        'SPRINKLER_TOGGLE_OSY1',
+        'SPRINKLER_TOGGLE_OSY2',
+        'SPRINKLER_TOGGLE_OSY3',
+        'SPRINKLER_TOGGLE_OSY4',
+        'SPRINKLER_TOGGLE_OSY5'
     ],
     SECURITY: [
         'ARM_AWAY',
@@ -276,7 +293,14 @@ module.exports = async (req, res) => {
             if (parts[1] === 'sync') {
                 const prev = sys.state && sys.state.status;
                 const st = body.state || {};
-                sys.state = { status: clip(st.status || (sys.type === 'FIRE' ? 'NORMAL' : 'DISARMED'), 32), alarms: Math.max(0, Number(st.alarms) || 0), zone: Number(st.zone) || 0, acPower: st.acPower !== false };
+                sys.state = {
+                    status: clip(st.status || (sys.type === 'FIRE' || sys.type === 'SPRINKLER' ? 'NORMAL' : 'DISARMED'), 32),
+                    alarms: Math.max(0, Number(st.alarms) || 0),
+                    zone: Number(st.zone) || 0,
+                    acPower: st.acPower !== false,
+                    pressure: typeof st.pressure === 'number' ? st.pressure : (st.pressure ? Number(st.pressure) : 120),
+                    flowingHeads: Math.max(0, Number(st.flowingHeads) || 0)
+                };
                 const wasOnline = sys.last_seen && Date.now() - sys.last_seen < ONLINE_MS;
                 sys.last_seen = Date.now();
                 const pending = state.commands.filter(c => c.system_id === sys.system_id && c.status === 'PENDING');
@@ -441,10 +465,11 @@ module.exports = async (req, res) => {
             if (parts[2] === 'systems' && method === 'POST') {
                 if (!need('manager')) return deny();
                 const type = String(body.type || '').toUpperCase();
-                if (!COMMANDS[type]) return fail(400, 'BAD_TYPE', 'System type must be FIRE or SECURITY.');
+                if (!COMMANDS[type]) return fail(400, 'BAD_TYPE', 'System type must be FIRE, SECURITY or SPRINKLER.');
                 if (Object.values(state.systems).filter(s => s.facility_id === fac.facility_id).length >= 20) return fail(400, 'LIMIT', 'System limit reached (20 per facility).');
-                const name = clip(body.name, 60).trim() || (type === 'FIRE' ? 'Fire Alarm Panel' : 'Security Panel');
-                let sid; do { sid = (type === 'FIRE' ? 'F-' : 'S-') + digits(); } while (state.systems[sid]);
+                const defaultName = type === 'FIRE' ? 'Fire Alarm Panel' : (type === 'SPRINKLER' ? 'Fire Sprinkler Riser' : 'Security Panel');
+                const name = clip(body.name, 60).trim() || defaultName;
+                let sid; do { sid = (type === 'FIRE' ? 'F-' : (type === 'SPRINKLER' ? 'SP-' : 'S-')) + digits(); } while (state.systems[sid]);
                 state.systems[sid] = { system_id: sid, facility_id: fac.facility_id, type, name, state: {}, blacklisted: false, created_at: new Date().toISOString() };
                 addLog(fac.facility_id, sid, type, 'SYSTEM_CREATED', user.username, 'PORTAL', `${type} system "${name}" registered`, 'INFO');
                 await save(true);
