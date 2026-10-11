@@ -262,6 +262,16 @@ function sysCard(s){
           </div>
         </div>
         <div class="ctl-sec">
+          <div class="ctl-lbl">Mass Notification • Thunderbolt 1003A Siren</div>
+          <div class="ctl-grid">
+            <button class="btn sm fire-act" onclick="sendCmd('${s.system_id}','SIREN_ALERT')">🚨 Siren Alert</button>
+            <button class="btn sm warn-act" onclick="sendCmd('${s.system_id}','SIREN_ATTACK')">⚠️ Siren Attack</button>
+            <button class="btn sm fire-act" onclick="sendCmd('${s.system_id}','SIREN_HILO')">📢 Hi-Lo Pulse</button>
+            <button class="btn sm blue-act" onclick="sendCmd('${s.system_id}','SIREN_TEST')">🔊 Growl Test</button>
+            <button class="btn sm ok-act" onclick="sendCmd('${s.system_id}','SIREN_CANCEL')">🛑 Cancel Siren</button>
+          </div>
+        </div>
+        <div class="ctl-sec">
           <div class="ctl-lbl">Diagnostics & Testing</div>
           <div class="ctl-grid">
             <button class="btn sm warn-act" onclick="sendCmd('${s.system_id}','TRIGGER_TROUBLE')">⚡ Sim Trouble</button>

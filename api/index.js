@@ -216,7 +216,12 @@ const COMMANDS = {
         'VOICE_EVAC',
         'VOICE_ALL_CLEAR',
         'VOICE_STANDBY',
-        'VOICE_WEATHER'
+        'VOICE_WEATHER',
+        'SIREN_ALERT',
+        'SIREN_ATTACK',
+        'SIREN_HILO',
+        'SIREN_TEST',
+        'SIREN_CANCEL'
     ],
     SECURITY: [
         'ARM_AWAY',
