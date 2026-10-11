@@ -35,7 +35,7 @@ function seenNonce(key, nonce) {
     return false;
 }
 
-const POSTGRES_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+const POSTGRES_URL = process.env.STORAGE_URL || process.env.STORAGE_DATABASE_URL || process.env.STORAGE_POSTGRES_URL || process.env.DATABASE_URL || process.env.POSTGRES_URL;
 let neonSql = null;
 if (POSTGRES_URL) {
     try {
