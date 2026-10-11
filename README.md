@@ -1,36 +1,97 @@
 # SafeLight Central Station
 
-Cloud monitoring portal for the SafeLight Simplex 4100U fire alarm and Vista 20P security systems in Roblox.
+Cloud monitoring portal for the SafeLight Simplex 4100U fire alarm, commercial sprinkler riser, and Vista 20P security systems in Roblox.
 
-## How it works
-1. Sign up / sign in on the website (stays signed in for 30 days via a secure cookie).
-2. **Create a facility** (name + Roblox Place ID). You get a **Facility API key**.
-3. Add your first system (Fire or Security). You get a **System ID** (`F-123456` / `S-123456`).
-4. Paste into `Simplex_Config.WebCentralStation` in Roblox:
+Live portal: https://safe-light-life-systems.vercel.app/
+
+---
+
+## Supported Life Safety Systems
+
+### 1. 🔥 Fire Alarm System (`FIRE` / `F-XXXXXX`)
+* **Simplex 4100U Life Safety Master System**
+* Real-time transponder telemetry: Status (`NORMAL`, `ALARM`, `SILENCED`, `TROUBLE`, `SUPERVISORY`), Active alarms, AC power / 24V battery status.
+* Remote controls: Fire Ack, Horn Silence, System Reset, Evacuation Drill, Lamp Test, Walk-Test.
+* Digital Voice Evacuation: Evac Message, All-Clear, Standby, Severe Weather (WX).
+* Mass Notification: Federal Signal Thunderbolt 1003A Siren (Alert, Attack, Hi-Lo Pulse, Growl Test, Cancel).
+* Motorized Fire Shutters: Remote deploy / retract.
+* Sprinkler Interlink: Flow Switch Test, Ack, Reset, Drain, Refill (inhibited if panel sync is disabled in game).
+
+### 2. 🌊 Commercial Sprinkler System (`SPRINKLER` / `SP-XXXXXX`)
+* **Wet Pipe Main Riser & Waterflow Monitoring System**
+* Real-time hydraulic telemetry: Static water pressure (`PSI`), active flowing heads count, and main riser charge status (`CHARGED` vs `DRAINED`).
+* Riser controls: Flow Switch Test, Acknowledge Alarm, System Reset, Drain Main Riser (2" main drain), Refill City Water (municipal main).
+* OS&Y Valve Supervision: Supervisory tamper toggles for OS&Y valves #1 through #5.
+* 5-second thermal fire particle burst threshold.
+
+### 3. 🛡️ Security System (`SECURITY` / `S-XXXXXX`)
+* **Ademco / Honeywell Vista 20P Commercial Intrusion System**
+* Real-time partition telemetry: Arming status (`ARMED_AWAY`, `ARMED_STAY`, `DISARMED`), Alarmed zones.
+* Remote controls: Arm Away, Arm Stay, Disarm, Chime Toggle.
+* Emergency Panics: Police Panic, Fire Panic, Medical Emergency.
+
+---
+
+## Setup & Roblox Configuration
+
+1. Sign up or log in at [SafeLight Central Station](https://safe-light-life-systems.vercel.app/).
+2. **Create a facility** (Facility Name + Roblox Game / Place ID). You will receive a **Facility API Key** (`SLK_...`).
+3. Add your systems using the **+ Add System** wizard:
+   * **Fire alarm** -> generates System ID `F-XXXXXX`
+   * **Sprinkler** -> generates System ID `SP-XXXXXX`
+   * **Security** -> generates System ID `S-XXXXXX`
+4. Paste credentials into your Roblox config scripts:
+
+### For Simplex 4100U (`ReplicatedStorage.Simplex_FireSystem.Simplex_Config`):
 ```lua
 WebCentralStation = {
-    SystemID = "F-123456",          -- fire system
-    SecuritySystemID = "S-123456",  -- security system (optional)
-    APIKey = "SLK_...",             -- facility API key
+    Enabled = true,
+    SystemID = "F-XXXXXX",
+    APIKey = "SLK_XXXXXX",
 }
 ```
-The portal URL is **not** in any config. It lives (XOR-encoded) in the server-only `SafeLight_Link` ModuleScript in ServerScriptService, which both scripts use. After you know your Vercel domain run `node tools/encode-url.js https://your-app.vercel.app` and paste the printed `_d` table into `SafeLight_Link`. (Obfuscation only deters casual reading; real security is the server-side API key checks.)
 
-## Team access & alerts
-Owners/managers can add registered users as Viewer (monitor), Operator (+ remote controls) or Manager (+ systems, key, team), and set a Discord webhook for alarm/trouble/restore alerts. Logs export to CSV.
+### For Sprinkler System (`ReplicatedStorage.Sprinkler_System.Sprinkler_Config`):
+```lua
+WebCentralStation = {
+    Enabled = true,
+    SprinklerSystemID = "SP-XXXXXX",
+    APIKey = "SLK_XXXXXX",
+    PollInterval = 3.0,
+}
+```
 
-## Device API security (v1)
-Roblox requests carry a timestamp + unique nonce (replay protection, 2-minute window), are rate limited, and the key is compared in constant time. Web API has login/signup rate limits, origin checks and per-user limits. Errors return `{error, code, requestId}`.
+### For Security System (`ReplicatedStorage.SafeLightSecurity.Security_Config`):
+```lua
+WebCentralStation = {
+    Enabled = true,
+    SecuritySystemID = "S-XXXXXX",
+    APIKey = "SLK_XXXXXX",
+}
+```
 
-## Deploy on Vercel
-1. Import this repo in Vercel (framework: Other).
-2. **Add storage** (Storage tab -> Upstash Redis). This sets `KV_REST_API_URL` / `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_REST_*`). Without it, data lives in memory and is lost on cold starts.
-3. Optional env var `ADMIN_USERNAME` (default `JordanDanielsGames`): that account can see all facilities and blacklist them. **Sign up with that name first.**
-4. In Roblox: Game Settings -> Security -> enable *Allow HTTP Requests*.
+---
 
-## Local dev
-`npm install && npm start` -> http://localhost:3000 (in-memory storage).
+## Team Roles & Permissions
+* **Viewer:** Read-only telemetry monitoring and event log access.
+* **Operator:** Telemetry monitoring + remote control button execution.
+* **Manager:** + Add/remove systems, rotate API keys, configure Discord webhook, manage team members.
+* **Owner:** Full ownership, delete facility, transfer permissions.
 
-## API
-- Web (cookie auth): `/api/auth/{signup,login,logout,me}`, `/api/facilities[/:id[/systems|logs|control|blacklist|regenerate-key]]`
-- Roblox (API key auth): `POST /api/device/sync`, `POST /api/device/log`
+---
+
+## Discord Webhook Alerts
+Connect a Discord webhook URL in your facility settings. Real-time embeds are delivered for:
+* Active Fire Alarms & Waterflow trips
+* OS&Y valve tamper & supervisory signals
+* AC power loss / battery backup failovers
+* Intrusion alarms & panic buttons
+* Remote operator commands & restoral confirmations
+
+---
+
+## Vercel Deployment & Database Persistence
+1. Fork or import repository to Vercel (Preset: Other).
+2. Connect **Upstash Redis** under **Storage** -> **Connect Database** -> **Upstash Redis**.
+3. Set optional environment variable `ADMIN_USERNAME` (default `JordanDanielsGames`).
+4. In Roblox Studio: **Home** -> **Game Settings** -> **Security** -> Enable **Allow HTTP Requests**.
