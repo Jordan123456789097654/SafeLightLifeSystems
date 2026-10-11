@@ -101,6 +101,17 @@ pre{background:#080a10;border:1px solid var(--line);border-radius:10px;padding:1
 
 <!-- DASHBOARD -->
 <main id="dashView" class="hidden">
+  <div id="storageNotice" class="card hidden" style="margin-bottom:18px;border-color:var(--warn);background:rgba(255,184,41,0.06)">
+    <div style="display:flex;align-items:flex-start;gap:12px">
+      <div style="font-size:20px">💡</div>
+      <div>
+        <b style="color:var(--warn)">Storage Notice: In-Memory Mode</b>
+        <div class="sub" style="margin-top:4px">
+          Your login session is kept for 30 days. To keep facilities, systems, and 30-day logs permanently saved across Vercel cold restarts, connect free <b>Upstash Redis</b> in your Vercel Project Dashboard (<b>Storage</b> &rarr; <b>Connect Database</b> &rarr; <b>Upstash Redis</b>).
+        </div>
+      </div>
+    </div>
+  </div>
   <div class="top">
     <div><h1>Your facilities</h1><div class="sub">Each facility is one Roblox game with its own API key.</div></div>
     <div style="display:flex;gap:8px">
@@ -151,12 +162,15 @@ pre{background:#080a10;border:1px solid var(--line);border-radius:10px;padding:1
 <script>
 const $=id=>document.getElementById(id);
 const LV={viewer:1,operator:2,manager:3,owner:4};
-let me=null, showAll=false, curFac=null, logType='ALL', keyShown=false, wizFac=null, timer=null;
+let authToken=localStorage.getItem('sl_token')||'';
+let me=null, showAll=false, curFac=null, logType='ALL', keyShown=false, wizFac=null, timer=null, storageMode='memory';
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(path,method='GET',body){
-  const r=await fetch('/api/v1'+path,{method,credentials:'same-origin',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const headers={'Content-Type':'application/json'};
+  if(authToken) headers['Authorization']='Bearer '+authToken;
+  const r=await fetch('/api/v1'+path,{method,credentials:'include',headers,body:body?JSON.stringify(body):undefined});
   const d=await r.json().catch(()=>({}));
-  if(r.status===401&&me){me=null;render();}
+  if(r.status===401&&me){me=null;authToken='';localStorage.removeItem('sl_token');render();}
   if(!r.ok) throw new Error(d.error||'Request failed');
   return d;
 }
@@ -170,8 +184,9 @@ function authTab(m){authMode=m;$('tabIn').classList.toggle('on',m==='in');$('tab
   $('auBtn').textContent=m==='in'?'Sign in':'Create account';$('auPass').autocomplete=m==='in'?'current-password':'new-password';$('auErr').textContent=''}
 async function submitAuth(e){e.preventDefault();$('auErr').textContent='';
   try{const d=await api('/auth/'+(authMode==='in'?'login':'signup'),'POST',{username:$('auUser').value,password:$('auPass').value});
-    me=d.user;$('auPass').value='';render();}catch(x){$('auErr').textContent=x.message}}
-async function logout(){await api('/auth/logout','POST').catch(()=>{});me=null;curFac=null;render()}
+    me=d.user;if(d.token){authToken=d.token;localStorage.setItem('sl_token',d.token);}
+    $('auPass').value='';render();}catch(x){$('auErr').textContent=x.message}}
+async function logout(){await api('/auth/logout','POST').catch(()=>{});me=null;authToken='';localStorage.removeItem('sl_token');curFac=null;render()}
 
 /* ---------- routing ---------- */
 async function render(){
@@ -276,7 +291,18 @@ function openAddSystem(){showModal(`<h2>Add system</h2>${typePicker()}<label>Sys
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="addSystem()">Create system</button></div>`);wizType='FIRE'}
 async function addSystem(){try{const d=await api(`/facilities/${curFac.facility_id}/systems`,'POST',{type:wizType,name:$('sName').value});showResult(curFac.api_key,d.system,false)}catch(e){$('wErr').textContent=e.message}}
 
-(async()=>{try{me=(await api('/auth/me')).user}catch(e){}render()})();
+(async()=>{
+  try{
+    const h = await api('/health');
+    storageMode = h.storage;
+    if(h.storage === 'memory'){
+      const banner = $('storageNotice');
+      if(banner) banner.classList.remove('hidden');
+    }
+  }catch(e){}
+  try{me=(await api('/auth/me')).user}catch(e){}
+  render();
+})();
 </script>
 </body>
 </html>

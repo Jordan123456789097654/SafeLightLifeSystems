@@ -55,6 +55,36 @@ const digits = () => String(Math.floor(100000 + Math.random() * 900000));
 const hashPw = (pw, salt) => crypto.scryptSync(pw, salt, 32).toString('hex');
 const safeEq = (a, b) => { a = Buffer.from(String(a)); b = Buffer.from(String(b)); return a.length === b.length && crypto.timingSafeEqual(a, b); };
 
+const SESSION_SECRET = process.env.SESSION_SECRET || 'safelight_master_jwt_secret_f839a0bc42e9';
+
+function signSession(username, isAdminUser, maxAgeDays = SESSION_DAYS) {
+    const payload = {
+        u: username,
+        adm: !!isAdminUser,
+        exp: Date.now() + maxAgeDays * 864e5,
+        iat: Date.now()
+    };
+    const b64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const sig = crypto.createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
+    return `${b64}.${sig}`;
+}
+
+function verifySession(token) {
+    if (!token || typeof token !== 'string') return null;
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const [b64, sig] = parts;
+    const expected = crypto.createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
+    if (!safeEq(sig, expected)) return null;
+    try {
+        const payload = JSON.parse(Buffer.from(b64, 'base64url').toString('utf8'));
+        if (!payload || !payload.u || !payload.exp || payload.exp < Date.now()) return null;
+        return payload;
+    } catch {
+        return null;
+    }
+}
+
 function parseCookies(req) {
     const out = {};
     (req.headers.cookie || '').split(';').forEach(p => { const i = p.indexOf('='); if (i > 0) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim()); });
@@ -65,10 +95,29 @@ function setSession(req, res, token, maxAgeSec) {
     res.setHeader('Set-Cookie', `sl_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${secure}`);
 }
 function currentUser(req) {
-    const tok = parseCookies(req).sl_session;
-    const s = tok && state.sessions[tok];
-    if (!s || s.expires < Date.now()) return null;
-    return state.users[s.username] || null;
+    const cookieTok = parseCookies(req).sl_session;
+    const authHeader = req.headers.authorization || '';
+    const bearerTok = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+    const tok = cookieTok || bearerTok;
+    if (!tok) return null;
+
+    // 1. Stateless cryptographic verification (persists across cold starts and server restarts)
+    const verified = verifySession(tok);
+    if (verified) {
+        let u = Object.values(state.users).find(x => x.username.toLowerCase() === verified.u.toLowerCase());
+        if (!u) {
+            u = { username: verified.u, created_at: new Date(verified.iat || Date.now()).toISOString() };
+            state.users[verified.u] = u;
+        }
+        return u;
+    }
+
+    // 2. In-memory session fallback
+    const s = state.sessions[tok];
+    if (s && s.expires > Date.now()) {
+        return state.users[s.username] || null;
+    }
+    return null;
 }
 const isAdmin = (u) => u && u.username.toLowerCase() === ADMIN_USERNAME;
 
@@ -203,23 +252,23 @@ module.exports = async (req, res) => {
                 if (Object.values(state.users).some(u => u.username.toLowerCase() === username.toLowerCase())) return fail(409, 'USERNAME_TAKEN', 'That username is already taken.');
                 const salt = crypto.randomBytes(16).toString('hex');
                 state.users[username] = { username, salt, hash: hashPw(password, salt), created_at: new Date().toISOString() };
-                const token = crypto.randomBytes(32).toString('hex');
+                const token = signSession(username, isAdmin({ username }), SESSION_DAYS);
                 state.sessions[token] = { username, expires: Date.now() + SESSION_DAYS * 864e5 };
                 setSession(req, res, token, SESSION_DAYS * 86400);
                 await save(true);
-                return send(200, { user: { username, admin: isAdmin({ username }) } });
+                return send(200, { user: { username, admin: isAdmin({ username }) }, token });
             }
             if (parts[1] === 'login' && method === 'POST') {
                 const rl = rateLimit('login:' + ip, 10, 60000);
                 if (!rl.ok) { res.setHeader('Retry-After', rl.retry); return fail(429, 'RATE_LIMITED', 'Too many attempts. Wait a minute.'); }
                 const u = Object.values(state.users).find(x => x.username.toLowerCase() === String(body.username || '').toLowerCase());
                 if (!u || !safeEq(hashPw(String(body.password || ''), u.salt), u.hash)) return fail(401, 'BAD_CREDENTIALS', 'Invalid username or password.');
-                const token = crypto.randomBytes(32).toString('hex');
+                const token = signSession(u.username, isAdmin(u), SESSION_DAYS);
                 for (const [t, s] of Object.entries(state.sessions)) if (s.expires < Date.now()) delete state.sessions[t];
                 state.sessions[token] = { username: u.username, expires: Date.now() + SESSION_DAYS * 864e5 };
                 setSession(req, res, token, SESSION_DAYS * 86400);
                 await save(true);
-                return send(200, { user: { username: u.username, admin: isAdmin(u) } });
+                return send(200, { user: { username: u.username, admin: isAdmin(u) }, token });
             }
             if (parts[1] === 'logout' && method === 'POST') {
                 const tok = parseCookies(req).sl_session;
