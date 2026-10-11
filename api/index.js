@@ -197,7 +197,37 @@ function publicFacility(f, u) {
     return out;
 }
 
-const COMMANDS = { FIRE: ['FIRE_ACK', 'ALARM_SILENCE', 'SYSTEM_RESET', 'DRILL'], SECURITY: ['ARM_AWAY', 'ARM_STAY', 'DISARM', 'PANIC_POLICE'] };
+const COMMANDS = {
+    FIRE: [
+        'FIRE_ACK',
+        'ALARM_SILENCE',
+        'SYSTEM_RESET',
+        'DRILL',
+        'TRIGGER_ALARM',
+        'TRIGGER_WATERFLOW',
+        'TRIGGER_SUPERVISORY',
+        'TRIGGER_TROUBLE',
+        'CLEAR_TROUBLE',
+        'LAMP_TEST',
+        'WALK_TEST',
+        'TOGGLE_AC_POWER',
+        'CLOSE_SHUTTERS',
+        'OPEN_SHUTTERS',
+        'VOICE_EVAC',
+        'VOICE_ALL_CLEAR',
+        'VOICE_STANDBY',
+        'VOICE_WEATHER'
+    ],
+    SECURITY: [
+        'ARM_AWAY',
+        'ARM_STAY',
+        'DISARM',
+        'PANIC_POLICE',
+        'PANIC_FIRE',
+        'PANIC_MEDICAL',
+        'CHIME_TOGGLE'
+    ]
+};
 const SEVERITIES = ['INFO', 'WARN', 'CRITICAL'];
 const clip = (v, n) => String(v ?? '').slice(0, n);
 

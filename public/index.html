@@ -58,6 +58,17 @@ h1{font-size:22px}
 .metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;background:#0d1019;border-radius:10px;padding:12px;font-size:12px}
 .metrics span{color:var(--dim)}.metrics b{text-align:right}
 .ctl{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ctl-sec{border-top:1px solid var(--line);padding-top:8px;margin-top:4px}
+.ctl-lbl{font-size:10px;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
+.ctl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px}
+.btn.fire-act{background:#381116;border-color:#ff4057;color:#ff8595;font-weight:700}
+.btn.fire-act:hover{background:#ff4057;color:#fff}
+.btn.warn-act{background:#35250c;border-color:#ffb829;color:#ffd270}
+.btn.warn-act:hover{background:#ffb829;color:#000}
+.btn.blue-act{background:#11243e;border-color:#4da3ff;color:#a3d2ff}
+.btn.blue-act:hover{background:#4da3ff;color:#000}
+.btn.ok-act{background:#0e301e;border-color:#2be28a;color:#85ffc2}
+.btn.ok-act:hover{background:#2be28a;color:#000}
 .sec-title{font-size:13px;font-weight:700;color:var(--dim);letter-spacing:.8px;text-transform:uppercase;margin:28px 0 12px}
 table{width:100%;border-collapse:collapse;font-size:12px}
 th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line)}
@@ -217,13 +228,80 @@ async function loadDash(){
 function sysCard(s){
   const st=s.state||{},fire=s.type==='FIRE',lvl=LV[curFac.my_role]||0;
   const bad=fire?(st.status&&st.status!=='NORMAL'):(st.status&&st.status.startsWith('ALARM'));
-  const cmds=fire?[['FIRE_ACK','🔥 Ack'],['ALARM_SILENCE','🔕 Silence'],['SYSTEM_RESET','🔄 Reset'],['DRILL','🚒 Drill']]:[['ARM_AWAY','🏃 Arm away'],['ARM_STAY','🏠 Arm stay'],['DISARM','🔓 Disarm'],['PANIC_POLICE','🚨 Panic']];
+  let ctlHtml = '';
+  if (lvl >= 2) {
+    if (fire) {
+      ctlHtml = `
+        <div class="ctl-sec">
+          <div class="ctl-lbl">Emergency Triggering</div>
+          <div class="ctl-grid">
+            <button class="btn sm fire-act" onclick="sendCmd('${s.system_id}','TRIGGER_ALARM')">🔥 Trip Fire Alarm</button>
+            <button class="btn sm fire-act" onclick="sendCmd('${s.system_id}','TRIGGER_WATERFLOW')">🌊 Waterflow Switch</button>
+            <button class="btn sm warn-act" onclick="sendCmd('${s.system_id}','TRIGGER_SUPERVISORY')">⚠️ Supervisory</button>
+            <button class="btn sm warn-act" onclick="sendCmd('${s.system_id}','DRILL')">🚒 Evac Drill</button>
+          </div>
+        </div>
+        <div class="ctl-sec">
+          <div class="ctl-lbl">Panel Operations</div>
+          <div class="ctl-grid">
+            <button class="btn sm ok-act" onclick="sendCmd('${s.system_id}','FIRE_ACK')">🔔 Fire Ack</button>
+            <button class="btn sm warn-act" onclick="sendCmd('${s.system_id}','ALARM_SILENCE')">🔕 Silence Horns</button>
+            <button class="btn sm blue-act" onclick="sendCmd('${s.system_id}','SYSTEM_RESET')">🔄 System Reset</button>
+            <button class="btn sm" onclick="sendCmd('${s.system_id}','LAMP_TEST')">💡 Lamp Test</button>
+          </div>
+        </div>
+        <div class="ctl-sec">
+          <div class="ctl-lbl">Voice Evac & Shutter Automation</div>
+          <div class="ctl-grid">
+            <button class="btn sm fire-act" onclick="sendCmd('${s.system_id}','VOICE_EVAC')">📢 Evac Msg</button>
+            <button class="btn sm ok-act" onclick="sendCmd('${s.system_id}','VOICE_ALL_CLEAR')">🟢 All-Clear</button>
+            <button class="btn sm blue-act" onclick="sendCmd('${s.system_id}','VOICE_STANDBY')">⏳ Standby</button>
+            <button class="btn sm warn-act" onclick="sendCmd('${s.system_id}','VOICE_WEATHER')">🌪️ Weather</button>
+            <button class="btn sm" onclick="sendCmd('${s.system_id}','CLOSE_SHUTTERS')">🚪 Drop Shutters</button>
+            <button class="btn sm" onclick="sendCmd('${s.system_id}','OPEN_SHUTTERS')">🪟 Open Shutters</button>
+          </div>
+        </div>
+        <div class="ctl-sec">
+          <div class="ctl-lbl">Diagnostics & Testing</div>
+          <div class="ctl-grid">
+            <button class="btn sm warn-act" onclick="sendCmd('${s.system_id}','TRIGGER_TROUBLE')">⚡ Sim Trouble</button>
+            <button class="btn sm ok-act" onclick="sendCmd('${s.system_id}','CLEAR_TROUBLE')">🛡️ Clear Trouble</button>
+            <button class="btn sm" onclick="sendCmd('${s.system_id}','WALK_TEST')">🚶 Walk-Test</button>
+            <button class="btn sm" onclick="sendCmd('${s.system_id}','TOGGLE_AC_POWER')">🔋 Toggle AC/Batt</button>
+          </div>
+        </div>
+      `;
+    } else {
+      ctlHtml = `
+        <div class="ctl-sec">
+          <div class="ctl-lbl">Arming Controls</div>
+          <div class="ctl-grid">
+            <button class="btn sm ok-act" onclick="sendCmd('${s.system_id}','ARM_AWAY')">🛡️ Arm Away</button>
+            <button class="btn sm blue-act" onclick="sendCmd('${s.system_id}','ARM_STAY')">🏠 Arm Stay</button>
+            <button class="btn sm" onclick="sendCmd('${s.system_id}','DISARM')">🔓 Disarm</button>
+            <button class="btn sm" onclick="sendCmd('${s.system_id}','CHIME_TOGGLE')">🔔 Chime Toggle</button>
+          </div>
+        </div>
+        <div class="ctl-sec">
+          <div class="ctl-lbl">Emergency Panics</div>
+          <div class="ctl-grid">
+            <button class="btn sm fire-act" onclick="sendCmd('${s.system_id}','PANIC_POLICE')">🚨 Police Panic</button>
+            <button class="btn sm fire-act" onclick="sendCmd('${s.system_id}','PANIC_FIRE')">🔥 Fire Panic</button>
+            <button class="btn sm warn-act" onclick="sendCmd('${s.system_id}','PANIC_MEDICAL')">🚑 Medical Panic</button>
+          </div>
+        </div>
+      `;
+    }
+  } else {
+    ctlHtml = '<div class="sub" style="padding:6px 0">View-only access (operator role required)</div>';
+  }
   return `<div class="card sys ${fire?'fire':'security'}"><div class="sysh"><div><b>${fire?'🔥':'🛡️'} ${esc(s.name)}</b><div class="sub mono" style="margin-top:3px">System ID: ${s.system_id}</div></div>
     ${s.online?'<span class="pill ok"><i class="dot"></i>ONLINE</span>':'<span class="pill"><i class="dot"></i>OFFLINE</span>'}</div>
     <div class="metrics"><span>Status</span><b class="${bad?'':''}" style="color:${bad?'var(--fire)':'var(--ok)'}">${esc(st.status||'NO DATA')}</b>
     ${fire?`<span>Active alarms</span><b>${st.alarms||0}</b><span>AC power</span><b>${st.acPower===false?'BATTERY':'NORMAL'}</b>`:`<span>Alarmed zone</span><b>${st.zone?'Zone '+st.zone:'None'}</b>`}</div>
-    ${lvl>=2?`<div class="ctl">${cmds.map(c=>`<button class="btn sm" onclick="sendCmd('${s.system_id}','${c[0]}')">${c[1]}</button>`).join('')}</div>`:'<div class="sub">View-only access</div>'}
-    <div style="display:flex;justify-content:space-between"><button class="btn sm" onclick="copy('${s.system_id}')">Copy system ID</button>${lvl>=3?`<button class="btn sm danger" onclick="delSystem('${s.system_id}')">Remove</button>`:''}</div></div>`}
+    ${ctlHtml}
+    <div style="display:flex;justify-content:space-between;margin-top:8px"><button class="btn sm" onclick="copy('${s.system_id}')">Copy system ID</button>${lvl>=3?`<button class="btn sm danger" onclick="delSystem('${s.system_id}')">Remove</button>`:''}</div></div>`;
+}
 async function loadFacility(id,quiet){
   try{const d=await api('/facilities/'+id);curFac=d.facility;const f=curFac;
     $('fName').textContent=f.name;$('fMeta').textContent=`${f.facility_id} • Roblox Place ${f.site_id} • owner ${f.owner}`;
