@@ -35,18 +35,48 @@ function seenNonce(key, nonce) {
     return false;
 }
 
+const POSTGRES_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+let neonSql = null;
+if (POSTGRES_URL) {
+    try {
+        const { neon } = require('@neondatabase/serverless');
+        neonSql = neon(POSTGRES_URL);
+    } catch (e) {
+        console.error('neon init failed', e.message);
+    }
+}
+
 async function redis(cmd) {
     const r = await fetch(REDIS_URL, { method: 'POST', headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd) });
     return (await r.json()).result;
 }
 async function load() {
+    if (neonSql) {
+        try {
+            await neonSql`CREATE TABLE IF NOT EXISTS safelight_state (id TEXT PRIMARY KEY, data JSONB, updated_at TIMESTAMPTZ DEFAULT NOW())`;
+            const rows = await neonSql`SELECT data FROM safelight_state WHERE id = ${STATE_KEY}`;
+            if (rows.length && rows[0].data) state = rows[0].data;
+            return;
+        } catch (e) {
+            console.error('postgres load failed', e.message);
+        }
+    }
     if (!REDIS_URL) return;
     try { const raw = await redis(['GET', STATE_KEY]); if (raw) state = JSON.parse(raw); } catch (e) { console.error('load failed', e.message); }
 }
 async function save(force) {
-    if (!REDIS_URL) return;
+    if (!neonSql && !REDIS_URL) return;
     if (!force && Date.now() - lastSave < 15000) return;
     lastSave = Date.now();
+    if (neonSql) {
+        try {
+            await neonSql`INSERT INTO safelight_state (id, data, updated_at) VALUES (${STATE_KEY}, ${state}, NOW()) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`;
+            return;
+        } catch (e) {
+            console.error('postgres save failed', e.message);
+        }
+    }
+    if (!REDIS_URL) return;
     try { await redis(['SET', STATE_KEY, JSON.stringify(state)]); } catch (e) { console.error('save failed', e.message); }
 }
 
@@ -187,7 +217,7 @@ module.exports = async (req, res) => {
         let body = req.body || {};
         if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = {}; } }
 
-        if (path === '/health') return send(200, { ok: true, version: API_VERSION, storage: REDIS_URL ? 'redis' : 'memory', time: Date.now() });
+        if (path === '/health') return send(200, { ok: true, version: API_VERSION, storage: neonSql ? 'postgres' : (REDIS_URL ? 'redis' : 'memory'), time: Date.now() });
 
         await load();
 
