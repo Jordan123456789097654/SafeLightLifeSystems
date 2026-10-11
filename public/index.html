@@ -25,7 +25,7 @@ header{display:flex;justify-content:space-between;align-items:center;padding:14p
 .btn.danger{color:var(--fire)}
 .btn.sm{padding:6px 11px;font-size:12px}
 main{max-width:1200px;margin:0 auto;padding:28px}
-.hidden{display:none!important}
+.hidden{display:none!important}.mrow{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px}
 /* auth */
 .authwrap{min-height:calc(100vh - 70px);display:grid;place-items:center;padding:20px}
@@ -118,9 +118,9 @@ pre{background:#080a10;border:1px solid var(--line);border-radius:10px;padding:1
     <div><button class="btn sm" onclick="go('')">← All facilities</button>
       <h1 id="fName" style="margin-top:12px"></h1><div class="sub mono" id="fMeta"></div></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn primary" onclick="openAddSystem()">+ Add system</button>
+      <button class="btn primary mgr" onclick="openAddSystem()">+ Add system</button>
       <button class="btn hidden" id="blBtn" onclick="toggleBlacklist()"></button>
-      <button class="btn danger" onclick="deleteFacility()">Delete</button>
+      <button class="btn danger own" onclick="deleteFacility()">Delete</button><button class="btn" id="leaveBtn" onclick="leaveFacility()">Leave</button>
     </div>
   </div>
   <div class="card" id="keyCard">
@@ -130,10 +130,18 @@ pre{background:#080a10;border:1px solid var(--line);border-radius:10px;padding:1
       <button class="btn sm" onclick="copy(curFac.api_key)">Copy</button>
       <button class="btn sm danger" onclick="rotateKey()">Rotate</button></div>
   </div>
-  <div class="sec-title">Systems</div>
+  <div class="grid mgr" style="margin-top:16px" id="teamGrid">
+  <div class="card"><b>Team access</b><div class="sub">Add registered users by username.</div><div id="memberList" style="margin:12px 0"></div>
+    <div style="display:flex;gap:8px"><input id="mUser" placeholder="username"><select id="mRole" style="width:130px"><option value="viewer">Viewer</option><option value="operator" selected>Operator</option><option value="manager">Manager</option></select><button class="btn primary" onclick="addMember()">Add</button></div>
+    <div class="sub" style="margin-top:8px">Viewer: monitor only • Operator: + remote controls • Manager: + systems, API key, team</div></div>
+  <div class="card"><b>Discord alerts</b><div class="sub">Alarms, troubles and restores are posted to this webhook.</div>
+    <input id="whUrl" placeholder="https://discord.com/api/webhooks/..." style="margin-top:12px">
+    <div style="display:flex;gap:8px;margin-top:10px"><button class="btn primary" onclick="saveWebhook()">Save webhook</button><button class="btn" onclick="document.getElementById('whUrl').value='';saveWebhook()">Remove</button></div></div>
+</div>
+<div class="sec-title">Systems</div>
   <div class="grid" id="sysGrid"></div>
   <div class="sec-title" style="display:flex;justify-content:space-between;align-items:center">30-day event log
-    <span class="filters" id="logFilters"></span></div>
+    <span style="display:flex;gap:8px"><button class="btn sm" onclick="exportCsv()">Export CSV</button><span class="filters" id="logFilters"></span></span></div>
   <div class="tscroll"><table><thead><tr><th>Time</th><th>System</th><th>Event</th><th>Source</th><th>Details</th><th>Severity</th></tr></thead><tbody id="logBody"></tbody></table></div>
 </main>
 
@@ -142,10 +150,11 @@ pre{background:#080a10;border:1px solid var(--line);border-radius:10px;padding:1
 
 <script>
 const $=id=>document.getElementById(id);
+const LV={viewer:1,operator:2,manager:3,owner:4};
 let me=null, showAll=false, curFac=null, logType='ALL', keyShown=false, wizFac=null, timer=null;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(path,method='GET',body){
-  const r=await fetch('/api'+path,{method,credentials:'same-origin',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const r=await fetch('/api/v1'+path,{method,credentials:'same-origin',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
   const d=await r.json().catch(()=>({}));
   if(r.status===401&&me){me=null;render();}
   if(!r.ok) throw new Error(d.error||'Request failed');
@@ -184,26 +193,31 @@ async function loadDash(){
     if(!d.facilities.length){g.innerHTML=`<div class="card empty" style="grid-column:1/-1"><h2>No facilities yet</h2><p>Create your first facility to get an API key and start monitoring.</p><br><button class="btn primary" onclick="openWizard()">+ Create facility</button></div>`;return}
     g.innerHTML=d.facilities.map(f=>{const fire=f.systems.filter(s=>s.type==='FIRE').length,sec=f.systems.length-fire;
       return `<div class="card fac" onclick="go('#/f/${f.facility_id}')"><div style="display:flex;justify-content:space-between;gap:8px"><h3>${esc(f.name)}</h3>${f.blacklisted?'<span class="pill bad">BLACKLISTED</span>':f.online?'<span class="pill ok"><i class="dot"></i>ONLINE</span>':'<span class="pill"><i class="dot"></i>OFFLINE</span>'}</div>
-      <div class="sub mono">${f.facility_id} • Place ${esc(f.site_id)}${showAll?' • '+esc(f.owner):''}</div>
+      <div class="sub mono">${f.facility_id} • Place ${esc(f.site_id)}${f.my_role==='owner'?' • yours':' • '+esc(f.owner)+' ('+f.my_role+')'}</div>
       <div style="margin-top:14px;display:flex;gap:8px"><span class="pill">🔥 ${fire} fire</span><span class="pill">🛡️ ${sec} security</span></div></div>`}).join('')
   }catch(e){}
 }
 
 /* ---------- facility page ---------- */
 function sysCard(s){
-  const st=s.state||{},fire=s.type==='FIRE';
+  const st=s.state||{},fire=s.type==='FIRE',lvl=LV[curFac.my_role]||0;
   const bad=fire?(st.status&&st.status!=='NORMAL'):(st.status&&st.status.startsWith('ALARM'));
   const cmds=fire?[['FIRE_ACK','🔥 Ack'],['ALARM_SILENCE','🔕 Silence'],['SYSTEM_RESET','🔄 Reset'],['DRILL','🚒 Drill']]:[['ARM_AWAY','🏃 Arm away'],['ARM_STAY','🏠 Arm stay'],['DISARM','🔓 Disarm'],['PANIC_POLICE','🚨 Panic']];
   return `<div class="card sys ${fire?'fire':'security'}"><div class="sysh"><div><b>${fire?'🔥':'🛡️'} ${esc(s.name)}</b><div class="sub mono" style="margin-top:3px">System ID: ${s.system_id}</div></div>
     ${s.online?'<span class="pill ok"><i class="dot"></i>ONLINE</span>':'<span class="pill"><i class="dot"></i>OFFLINE</span>'}</div>
     <div class="metrics"><span>Status</span><b class="${bad?'':''}" style="color:${bad?'var(--fire)':'var(--ok)'}">${esc(st.status||'NO DATA')}</b>
     ${fire?`<span>Active alarms</span><b>${st.alarms||0}</b><span>AC power</span><b>${st.acPower===false?'BATTERY':'NORMAL'}</b>`:`<span>Alarmed zone</span><b>${st.zone?'Zone '+st.zone:'None'}</b>`}</div>
-    <div class="ctl">${cmds.map(c=>`<button class="btn sm" onclick="sendCmd('${s.system_id}','${c[0]}')">${c[1]}</button>`).join('')}</div>
-    <div style="display:flex;justify-content:space-between"><button class="btn sm" onclick="copy('${s.system_id}')">Copy system ID</button><button class="btn sm danger" onclick="delSystem('${s.system_id}')">Remove</button></div></div>`}
+    ${lvl>=2?`<div class="ctl">${cmds.map(c=>`<button class="btn sm" onclick="sendCmd('${s.system_id}','${c[0]}')">${c[1]}</button>`).join('')}</div>`:'<div class="sub">View-only access</div>'}
+    <div style="display:flex;justify-content:space-between"><button class="btn sm" onclick="copy('${s.system_id}')">Copy system ID</button>${lvl>=3?`<button class="btn sm danger" onclick="delSystem('${s.system_id}')">Remove</button>`:''}</div></div>`}
 async function loadFacility(id,quiet){
   try{const d=await api('/facilities/'+id);curFac=d.facility;const f=curFac;
     $('fName').textContent=f.name;$('fMeta').textContent=`${f.facility_id} • Roblox Place ${f.site_id} • owner ${f.owner}`;
     $('facBanner').innerHTML=f.blacklisted?`<div class="banner">⛔ This facility is blacklisted. Its in-game systems are locked out. ${esc(f.blacklist_reason)}</div>`:'';
+    const lv=LV[f.my_role]||0;
+    document.querySelectorAll('.mgr').forEach(e=>e.classList.toggle('hidden',lv<3));
+    document.querySelectorAll('.own').forEach(e=>e.classList.toggle('hidden',lv<4));
+    $('leaveBtn').classList.toggle('hidden',f.my_role==='owner');
+    renderMembers(f);
     $('keyCard').classList.toggle('hidden',!f.api_key);
     if(f.api_key)$('keyText').textContent=keyShown?f.api_key:'•'.repeat(28);
     $('blBtn').classList.toggle('hidden',!me.admin);$('blBtn').textContent=f.blacklisted?'Lift blacklist':'Blacklist';
@@ -214,6 +228,17 @@ async function loadFacility(id,quiet){
 }
 async function loadLogs(){try{const d=await api(`/facilities/${curFac.facility_id}/logs?type=${logType}`);
   $('logBody').innerHTML=d.logs.length?d.logs.map(l=>`<tr><td>${new Date(l.created_at).toLocaleString()}</td><td>${esc(l.system_type)}</td><td><b>${esc(l.event_type)}</b></td><td>${esc(l.device_name)}${l.point_or_zone?' ('+esc(l.point_or_zone)+')':''}</td><td>${esc(l.details)}</td><td style="color:${l.severity==='CRITICAL'?'var(--fire)':l.severity==='WARN'?'var(--warn)':'var(--ok)'}">${esc(l.severity)}</td></tr>`).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:24px">No events in the last 30 days</td></tr>'}catch(e){}}
+function renderMembers(f){
+  if(!f.members)return;
+  const ents=Object.entries(f.members);
+  $('memberList').innerHTML=`<div class="mrow"><span>👑 ${esc(f.owner)}</span><span class="sub">owner</span></div>`+ents.map(([u,r])=>`<div class="mrow"><span>${esc(u)}</span><span><span class="sub">${r}</span> <button class="btn sm danger" onclick="rmMember('${esc(u)}')">Remove</button></span></div>`).join('');
+  const w=$('whUrl'); if(document.activeElement!==w) w.value=f.webhook||'';
+}
+async function addMember(){try{await api(`/facilities/${curFac.facility_id}/members`,'POST',{username:$('mUser').value,role:$('mRole').value});$('mUser').value='';toast('Member added');loadFacility(curFac.facility_id,true)}catch(e){toast(e.message)}}
+async function rmMember(u){if(!confirm('Remove '+u+'?'))return;try{await api(`/facilities/${curFac.facility_id}/members/${encodeURIComponent(u)}`,'DELETE');loadFacility(curFac.facility_id,true)}catch(e){toast(e.message)}}
+async function leaveFacility(){if(!confirm('Leave this facility?'))return;try{await api(`/facilities/${curFac.facility_id}/members/${encodeURIComponent(me.username)}`,'DELETE');go('')}catch(e){toast(e.message)}}
+async function saveWebhook(){try{await api(`/facilities/${curFac.facility_id}/webhook`,'POST',{url:$('whUrl').value});toast('Webhook saved')}catch(e){toast(e.message)}}
+function exportCsv(){window.location=`/api/v1/facilities/${curFac.facility_id}/logs?format=csv&type=${logType}`}
 function setLog(t){logType=t;loadFacility(curFac.facility_id,true)}
 function toggleKey(){keyShown=!keyShown;$('keyShow').textContent=keyShown?'Hide':'Show';$('keyText').textContent=keyShown?curFac.api_key:'•'.repeat(28)}
 async function sendCmd(sid,cmd){try{const d=await api(`/facilities/${curFac.facility_id}/control`,'POST',{systemId:sid,command:cmd});toast(d.message)}catch(e){toast(e.message)}}
