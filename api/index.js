@@ -1,451 +1,298 @@
-// SafeLight Central Station - In-Memory / Serverless Store with 30-Day Retention
-// Supports Vercel Serverless & Node.js environments
+// SafeLight Central Station API (Vercel serverless / Express compatible)
+// Storage: Upstash Redis REST if UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN are set
+// (Vercel Marketplace -> Upstash Redis). Otherwise in-memory (resets on cold start).
 
-const https = require('https');
+const crypto = require('crypto');
 
-// Persistent storage in serverless container
-const storage = {
-    facilities: {
-        "SIMP-4100-SL": {
-            site_id: "75135033352863",
-            facility_id: "SIMP-4100-SL",
-            name: "SafeLight Commercial Headquarters",
-            api_key: "SL_SECURE_KEY_9941",
-            blacklisted: false,
-            created_at: new Date().toISOString()
-        }
-    },
-    systems: {
-        "SYS-F-111345": {
-            system_id: "SYS-F-111345",
-            facility_id: "SIMP-4100-SL",
-            type: "FIRE",
-            model: "Simplex 4100U",
-            status: "NORMAL",
-            alarms_count: 0,
-            ac_power: 1,
-            blacklisted: false,
-            last_heartbeat: new Date().toISOString()
-        },
-        "SYS-S-222789": {
-            system_id: "SYS-S-222789",
-            facility_id: "SIMP-4100-SL",
-            type: "SECURITY",
-            model: "Ademco Vista 20P",
-            status: "DISARMED",
-            alarmed_zone: 0,
-            blacklisted: false,
-            last_heartbeat: new Date().toISOString()
-        }
-    },
-    logs: [
-        {
-            id: 1,
-            facility_id: "SIMP-4100-SL",
-            system_id: "SYS-F-111345",
-            system_type: "FIRE",
-            event_type: "STANDBY",
-            device_name: "Simplex 4100U",
-            point_or_zone: "PANEL",
-            details: "Simplex 4100U system initialized and supervised",
-            severity: "INFO",
-            created_at: new Date().toISOString()
-        }
-    ],
-    users: {},
-    commands: []
+const ADMIN_USERNAME = (process.env.ADMIN_USERNAME || 'JordanDanielsGames').toLowerCase();
+const SESSION_DAYS = 30;
+const ONLINE_MS = 30000;
+const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+const STATE_KEY = 'safelight:state:v2';
+
+let state = { users: {}, sessions: {}, facilities: {}, systems: {}, logs: [], commands: [] };
+let lastSave = 0;
+
+async function redis(cmd) {
+    const r = await fetch(REDIS_URL, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(cmd)
+    });
+    return (await r.json()).result;
+}
+async function load() {
+    if (!REDIS_URL) return;
+    try {
+        const raw = await redis(['GET', STATE_KEY]);
+        if (raw) state = JSON.parse(raw);
+    } catch (e) { console.error('load failed', e.message); }
+}
+async function save(force) {
+    if (!REDIS_URL) return;
+    if (!force && Date.now() - lastSave < 15000) return;
+    lastSave = Date.now();
+    try { await redis(['SET', STATE_KEY, JSON.stringify(state)]); } catch (e) { console.error('save failed', e.message); }
+}
+
+const rid = (n) => crypto.randomBytes(n).toString('hex').toUpperCase();
+const digits = () => String(Math.floor(100000 + Math.random() * 900000));
+
+function hashPw(pw, salt) { return crypto.scryptSync(pw, salt, 32).toString('hex'); }
+
+function parseCookies(req) {
+    const out = {};
+    (req.headers.cookie || '').split(';').forEach(p => {
+        const i = p.indexOf('=');
+        if (i > 0) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim());
+    });
+    return out;
+}
+function setSession(req, res, token, maxAgeSec) {
+    const secure = (req.headers['x-forwarded-proto'] || '').includes('https') ? '; Secure' : '';
+    res.setHeader('Set-Cookie', `sl_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${secure}`);
+}
+function currentUser(req) {
+    const tok = parseCookies(req).sl_session;
+    const s = tok && state.sessions[tok];
+    if (!s || s.expires < Date.now()) return null;
+    return state.users[s.username] || null;
+}
+const isAdmin = (u) => u && u.username.toLowerCase() === ADMIN_USERNAME;
+const canAccess = (u, f) => f && u && (f.owner === u.username || isAdmin(u));
+
+function purgeLogs() {
+    const cutoff = Date.now() - RETENTION_MS;
+    state.logs = state.logs.filter(l => l.ts > cutoff).slice(0, 5000);
+}
+function addLog(facilityId, systemId, systemType, eventType, device, point, details, severity) {
+    state.logs.unshift({
+        facility_id: facilityId, system_id: systemId || null, system_type: systemType,
+        event_type: eventType, device_name: device || 'System', point_or_zone: point || '',
+        details: details || '', severity: severity || 'INFO',
+        ts: Date.now(), created_at: new Date().toISOString()
+    });
+    purgeLogs();
+}
+
+function publicSystem(s) {
+    return {
+        system_id: s.system_id, facility_id: s.facility_id, type: s.type, name: s.name,
+        state: s.state || {}, blacklisted: !!s.blacklisted, last_seen: s.last_seen || null,
+        online: !!s.last_seen && Date.now() - s.last_seen < ONLINE_MS
+    };
+}
+function publicFacility(f, withKey) {
+    const systems = Object.values(state.systems).filter(s => s.facility_id === f.facility_id).map(publicSystem);
+    const out = {
+        facility_id: f.facility_id, name: f.name, site_id: f.site_id, owner: f.owner,
+        blacklisted: !!f.blacklisted, blacklist_reason: f.blacklist_reason || '',
+        created_at: f.created_at, systems, online: systems.some(s => s.online)
+    };
+    if (withKey) out.api_key = f.api_key;
+    return out;
+}
+
+const COMMANDS = {
+    FIRE: ['FIRE_ACK', 'ALARM_SILENCE', 'SYSTEM_RESET', 'DRILL'],
+    SECURITY: ['ARM_AWAY', 'ARM_STAY', 'DISARM', 'PANIC_POLICE']
 };
 
-// Roblox Bio Fetcher
-function fetchRobloxUserBio(username, callback) {
-    const postData = JSON.stringify({ usernames: [username], excludeBannedUsers: true });
-    const req = https.request({
-        hostname: 'users.roblox.com',
-        path: '/v1/usernames/users',
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(postData)
-        }
-    }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-            try {
-                const parsed = JSON.parse(data);
-                if (parsed.data && parsed.data.length > 0) {
-                    const robloxId = parsed.data[0].id;
-                    https.get(`https://users.roblox.com/v1/users/${robloxId}`, (bRes) => {
-                        let bData = '';
-                        bRes.on('data', chunk => bData += chunk);
-                        bRes.on('end', () => {
-                            try {
-                                const userObj = JSON.parse(bData);
-                                callback(null, { robloxId: robloxId, bio: userObj.description || '' });
-                            } catch (e) { callback(e); }
-                        });
-                    }).on('error', err => callback(err));
-                } else {
-                    callback(new Error("Roblox username not found."));
-                }
-            } catch (e) { callback(e); }
-        });
-    });
-    req.on('error', err => callback(err));
-    req.write(postData);
-    req.end();
-}
+module.exports = async (req, res) => {
+    const send = (code, obj) => res.status(code).json(obj);
+    try {
+        const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+        const path = url.pathname.replace(/^\/api/, '').replace(/\/+$/, '') || '/';
+        const parts = path.split('/').filter(Boolean);
+        const method = req.method;
+        let body = req.body || {};
+        if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = {}; } }
 
-const SAFEWORDS = ["apple", "cat", "fish", "safelight", "simplex", "phoenix", "falcon", "citadel", "aurora", "beacon"];
-function generateChallenge() {
-    const w1 = SAFEWORDS[Math.floor(Math.random() * SAFEWORDS.length)];
-    const w2 = SAFEWORDS[Math.floor(Math.random() * SAFEWORDS.length)];
-    const w3 = SAFEWORDS[Math.floor(Math.random() * SAFEWORDS.length)];
-    return `${w1} ${w2} ${w3} ${Math.floor(100 + Math.random() * 900)}`;
-}
+        await load();
 
-module.exports = (req, res) => {
-    // CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        // ================= DEVICE (Roblox) ENDPOINTS: authenticated by facility API key =================
+        if (parts[0] === 'device' && method === 'POST') {
+            const fac = Object.values(state.facilities).find(f => f.api_key && f.api_key === body.apiKey);
+            if (!fac) return send(403, { error: 'Invalid API key' });
+            const sys = state.systems[body.systemId];
+            if (!sys || sys.facility_id !== fac.facility_id) return send(403, { error: 'System ID does not belong to this facility' });
 
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
+            if (fac.blacklisted || sys.blacklisted) {
+                return send(200, { success: false, blacklisted: true, disabled: true, message: fac.blacklist_reason || 'Facility blacklisted by SafeLight Central Command' });
+            }
 
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const pathname = url.pathname.replace(/^\/api/, '');
-
-    // Parse JSON body helper
-    let body = req.body || {};
-    if (typeof body === 'string') {
-        try { body = JSON.parse(body); } catch(e){}
-    }
-
-    // ==========================================
-    // 1. SYSTEM CREATION & GENERATION (Gives you a unique System ID)
-    // ==========================================
-    if (pathname === '/system/create' && req.method === 'POST') {
-        const { siteId, facilityName, systemType, modelName } = body;
-        if (!siteId || !systemType) {
-            return res.status(400).json({ error: "Roblox Game Site ID and System Type (FIRE/SECURITY) required." });
+            if (parts[1] === 'sync') {
+                const prevStatus = sys.state && sys.state.status;
+                const st = body.state || {};
+                sys.state = {
+                    status: st.status || (sys.type === 'FIRE' ? 'NORMAL' : 'DISARMED'),
+                    alarms: st.alarms || 0,
+                    zone: st.zone || 0,
+                    acPower: st.acPower !== false
+                };
+                const wasOnline = sys.last_seen && Date.now() - sys.last_seen < ONLINE_MS;
+                sys.last_seen = Date.now();
+                const pending = state.commands.filter(c => c.system_id === sys.system_id && c.status === 'PENDING');
+                pending.forEach(c => c.status = 'SENT');
+                state.commands = state.commands.filter(c => c.status === 'PENDING' || Date.now() - c.ts < 3600000);
+                if (!wasOnline) addLog(fac.facility_id, sys.system_id, sys.type, 'ONLINE', sys.name, 'LINK', 'System connected to Central Station', 'INFO');
+                await save(!!pending.length || prevStatus !== sys.state.status || !wasOnline);
+                return send(200, { success: true, blacklisted: false, commands: pending.map(c => ({ id: c.id, command: c.command })) });
+            }
+            if (parts[1] === 'log') {
+                addLog(fac.facility_id, sys.system_id, sys.type, body.eventType || 'INFO', body.deviceName, body.pointOrZone, body.details, body.severity);
+                await save(true);
+                return send(200, { success: true });
+            }
+            return send(404, { error: 'Unknown device route' });
         }
 
-        const facId = "FAC-" + Math.floor(1000 + Math.random() * 9000);
-        const randNum = Math.floor(100000 + Math.random() * 900000);
-        const sysId = systemType === "FIRE" ? `SYS-F-${randNum}` : `SYS-S-${randNum}`;
-        const apiKey = "SL_KEY_" + Math.random().toString(36).substr(2, 9).toUpperCase();
-
-        if (!storage.facilities[facId]) {
-            storage.facilities[facId] = {
-                site_id: siteId.toString(),
-                facility_id: facId,
-                name: facilityName || `SafeLight Facility ${siteId}`,
-                api_key: apiKey,
-                blacklisted: false,
-                created_at: new Date().toISOString()
-            };
-        }
-
-        storage.systems[sysId] = {
-            system_id: sysId,
-            facility_id: facId,
-            site_id: siteId.toString(),
-            type: systemType.toUpperCase(),
-            model: modelName || (systemType === "FIRE" ? "Simplex 4100U" : "Ademco Vista 20P"),
-            status: systemType === "FIRE" ? "NORMAL" : "DISARMED",
-            alarms_count: 0,
-            ac_power: 1,
-            blacklisted: false,
-            last_heartbeat: new Date().toISOString()
-        };
-
-        return res.json({
-            success: true,
-            facilityId: facId,
-            systemId: sysId,
-            siteId: siteId,
-            systemType: systemType.toUpperCase(),
-            apiKey: apiKey,
-            instructions: `Copy System ID '${sysId}' and Facility ID '${facId}' into your Roblox Simplex_Config / SafeLight_Config.`
-        });
-    }
-
-    // ==========================================
-    // 2. BLACKLIST / DISABLE FACILITY & SYSTEM
-    // ==========================================
-    if (pathname === '/facility/blacklist' && req.method === 'POST') {
-        const { facilityId, systemId, blacklisted, reason } = body;
-        if (facilityId && storage.facilities[facilityId]) {
-            storage.facilities[facilityId].blacklisted = blacklisted !== false;
-            // Also update all systems in facility
-            Object.values(storage.systems).forEach(s => {
-                if (s.facility_id === facilityId) s.blacklisted = blacklisted !== false;
-            });
-        }
-        if (systemId && storage.systems[systemId]) {
-            storage.systems[systemId].blacklisted = blacklisted !== false;
-        }
-
-        storage.logs.unshift({
-            id: storage.logs.length + 1,
-            facility_id: facilityId || "ALL",
-            system_id: systemId || "ALL",
-            system_type: "ADMIN",
-            event_type: blacklisted !== false ? "BLACKLIST_ENGAGED" : "BLACKLIST_LIFTED",
-            device_name: "Central Station Admin",
-            point_or_zone: "OVERRIDE",
-            details: reason || (blacklisted !== false ? "Facility access revoked and disabled" : "Access restored"),
-            severity: "CRITICAL",
-            created_at: new Date().toISOString()
-        });
-
-        return res.json({
-            success: true,
-            message: `Blacklist status updated to ${blacklisted !== false ? 'BLACKLISTED (SYSTEM DISABLED)' : 'ACTIVE'}`
-        });
-    }
-
-    // ==========================================
-    // 3. LIST ALL FACILITIES & SYSTEMS
-    // ==========================================
-    if (pathname === '/facilities' && req.method === 'GET') {
-        const now = Date.now();
-        const list = Object.values(storage.facilities).map(f => {
-            const sysList = Object.values(storage.systems).filter(s => s.facility_id === f.facility_id);
-            const isOnline = sysList.some(s => (now - new Date(s.last_heartbeat).getTime()) < 35000);
-            return {
-                ...f,
-                isOnline,
-                systems: sysList
-            };
-        });
-        return res.json({ facilities: list });
-    }
-
-    // ==========================================
-    // 4. ROBLOX INGESTION & SYNC (Heartbeat)
-    // ==========================================
-    if (pathname === '/facility/sync' && req.method === 'POST') {
-        const { facilityId, systemId, apiKey, state } = body;
-        const fac = storage.facilities[facilityId];
-        const sys = storage.systems[systemId];
-
-        // Check if blacklisted
-        if ((fac && fac.blacklisted) || (sys && sys.blacklisted)) {
-            return res.json({
-                success: false,
-                blacklisted: true,
-                disabled: true,
-                message: "THIS FACILITY HAS BEEN BLACKLISTED BY SAFELIGHT CENTRAL COMMAND. SYSTEM LOCKED OUT."
-            });
-        }
-
-        if (sys) {
-            sys.last_heartbeat = new Date().toISOString();
-            if (state) {
-                if (state.Mode) sys.status = state.Mode;
-                if (state.CurrentMode) sys.status = state.CurrentMode;
-                if (state.FireCount !== undefined) sys.alarms_count = state.FireCount;
-                if (state.AlarmedZone !== undefined) sys.alarmed_zone = state.AlarmedZone;
-                if (state.ACPowerNormal !== undefined) sys.ac_power = state.ACPowerNormal ? 1 : 0;
+        // ================= AUTH =================
+        if (parts[0] === 'auth') {
+            if (parts[1] === 'signup' && method === 'POST') {
+                const username = String(body.username || '').trim();
+                const password = String(body.password || '');
+                if (!/^[A-Za-z0-9_]{3,20}$/.test(username)) return send(400, { error: 'Username must be 3-20 letters, numbers or underscores.' });
+                if (password.length < 8) return send(400, { error: 'Password must be at least 8 characters.' });
+                if (state.users[username.toLowerCase()] || Object.values(state.users).some(u => u.username.toLowerCase() === username.toLowerCase()))
+                    return send(409, { error: 'That username is already taken.' });
+                const salt = crypto.randomBytes(16).toString('hex');
+                state.users[username] = { username, salt, hash: hashPw(password, salt), created_at: new Date().toISOString() };
+                const token = crypto.randomBytes(32).toString('hex');
+                state.sessions[token] = { username, expires: Date.now() + SESSION_DAYS * 864e5 };
+                setSession(req, res, token, SESSION_DAYS * 86400);
+                await save(true);
+                return send(200, { user: { username, admin: isAdmin({ username }) } });
+            }
+            if (parts[1] === 'login' && method === 'POST') {
+                const u = Object.values(state.users).find(x => x.username.toLowerCase() === String(body.username || '').toLowerCase());
+                if (!u || hashPw(String(body.password || ''), u.salt) !== u.hash) return send(401, { error: 'Invalid username or password.' });
+                const token = crypto.randomBytes(32).toString('hex');
+                state.sessions[token] = { username: u.username, expires: Date.now() + SESSION_DAYS * 864e5 };
+                for (const [t, s] of Object.entries(state.sessions)) if (s.expires < Date.now()) delete state.sessions[t];
+                setSession(req, res, token, SESSION_DAYS * 86400);
+                await save(true);
+                return send(200, { user: { username: u.username, admin: isAdmin(u) } });
+            }
+            if (parts[1] === 'logout' && method === 'POST') {
+                const tok = parseCookies(req).sl_session;
+                if (tok) delete state.sessions[tok];
+                setSession(req, res, '', 0);
+                await save(true);
+                return send(200, { success: true });
+            }
+            if (parts[1] === 'me' && method === 'GET') {
+                const u = currentUser(req);
+                return send(200, { user: u ? { username: u.username, admin: isAdmin(u) } : null });
             }
         }
 
-        // Return pending commands
-        const pending = storage.commands.filter(c => (c.system_id === systemId || c.facility_id === facilityId) && c.status === 'PENDING');
-        pending.forEach(p => p.status = 'PROCESSED');
+        // ================= EVERYTHING BELOW REQUIRES LOGIN =================
+        const user = currentUser(req);
+        if (!user) return send(401, { error: 'Please sign in.' });
 
-        return res.json({
-            success: true,
-            blacklisted: false,
-            disabled: false,
-            pendingCommands: pending
-        });
-    }
-
-    // ==========================================
-    // 5. LOG INGESTION (With 30-Day Auto Retention)
-    // ==========================================
-    if (pathname === '/facility/log' && req.method === 'POST') {
-        const { facilityId, systemId, systemType, eventType, deviceName, pointOrZone, details, severity } = body;
-
-        const newLog = {
-            id: storage.logs.length + 1,
-            facility_id: facilityId || "SIMP-4100-SL",
-            system_id: systemId || "SYS-000",
-            system_type: systemType || "FIRE",
-            event_type: eventType || "INFO",
-            device_name: deviceName || "System",
-            point_or_zone: pointOrZone || "N/A",
-            details: details || "",
-            severity: severity || "INFO",
-            created_at: new Date().toISOString()
-        };
-
-        storage.logs.unshift(newLog);
-
-        // 30-Day Retention Filter
-        const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
-        storage.logs = storage.logs.filter(l => new Date(l.created_at).getTime() > thirtyDaysAgo);
-        if (storage.logs.length > 2000) storage.logs = storage.logs.slice(0, 2000);
-
-        return res.json({ success: true, logId: newLog.id });
-    }
-
-    // ==========================================
-    // 6. GET STATUS (Live Telemetry)
-    // ==========================================
-    if (pathname.startsWith('/status') && req.method === 'GET') {
-        const parts = pathname.split('/').filter(Boolean);
-        const facId = parts[1] || url.searchParams.get('facilityId') || "SIMP-4100-SL";
-        const fac = storage.facilities[facId] || { name: `Facility ${facId}`, blacklisted: false };
-
-        const fireSys = Object.values(storage.systems).find(s => s.facility_id === facId && s.type === 'FIRE') || {
-            status: "NORMAL",
-            alarms_count: 0,
-            ac_power: 1,
-            last_heartbeat: new Date().toISOString()
-        };
-        const secSys = Object.values(storage.systems).find(s => s.facility_id === facId && s.type === 'SECURITY') || {
-            status: "DISARMED",
-            alarmed_zone: 0,
-            last_heartbeat: new Date().toISOString()
-        };
-
-        const now = Date.now();
-        const lastSeen = Math.max(new Date(fireSys.last_heartbeat).getTime(), new Date(secSys.last_heartbeat).getTime());
-        const isOnline = (now - lastSeen) < 35000;
-
-        return res.json({
-            facilityId: facId,
-            name: fac.name,
-            blacklisted: fac.blacklisted,
-            isOnline,
-            fire: {
-                status: fireSys.status,
-                alarmsCount: fireSys.alarms_count,
-                acPower: fireSys.ac_power === 1 ? "NORMAL (240V)" : "BATTERY BACKUP"
-            },
-            security: {
-                status: secSys.status,
-                alarmedZone: secSys.alarmed_zone
+        if (parts[0] === 'facilities') {
+            // List
+            if (parts.length === 1 && method === 'GET') {
+                const all = url.searchParams.get('all') === '1' && isAdmin(user);
+                const list = Object.values(state.facilities).filter(f => all || f.owner === user.username).map(f => publicFacility(f, !all || f.owner === user.username));
+                return send(200, { facilities: list, admin: isAdmin(user) });
             }
-        });
-    }
-
-    // ==========================================
-    // 7. GET LOGS (Filtered up to 30 Days)
-    // ==========================================
-    if (pathname.startsWith('/logs') && req.method === 'GET') {
-        const parts = pathname.split('/').filter(Boolean);
-        const facId = parts[1] || url.searchParams.get('facilityId');
-        const sysType = url.searchParams.get('systemType');
-        const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
-
-        let filtered = storage.logs.filter(l => new Date(l.created_at).getTime() > thirtyDaysAgo);
-        if (facId && facId !== 'ALL') filtered = filtered.filter(l => l.facility_id === facId);
-        if (sysType && sysType !== 'ALL') filtered = filtered.filter(l => l.system_type === sysType);
-
-        return res.json({ logs: filtered.slice(0, 150) });
-    }
-
-    // ==========================================
-    // 7. ROBLOX BIO VERIFICATION AUTH
-    // ==========================================
-    if (pathname === '/auth/start' && req.method === 'POST') {
-        const { username } = body;
-        if (!username) return res.status(400).json({ error: "Username required" });
-
-        fetchRobloxUserBio(username, (err, rUser) => {
-            if (err || !rUser) return res.status(404).json({ error: "Roblox username not found" });
-
-            const challenge = generateChallenge();
-            storage.users[username] = {
-                username,
-                robloxId: rUser.robloxId,
-                challenge,
-                verified: false,
-                role: (username.toLowerCase() === "jordandanielsgames") ? "MASTER_ADMIN" : "OPERATOR"
-            };
-
-            return res.json({
-                username,
-                challenge,
-                message: `Add '${challenge}' into your Roblox About/Bio, then verify.`
-            });
-        });
-        return;
-    }
-
-    if (pathname === '/auth/verify' && req.method === 'POST') {
-        const { username } = body;
-        const u = storage.users[username];
-        if (!u) return res.status(400).json({ error: "No active challenge found" });
-
-        fetchRobloxUserBio(username, (err, rUser) => {
-            if (err) return res.status(500).json({ error: "Could not fetch bio from Roblox" });
-
-            const hasAll = u.challenge.toLowerCase().split(' ').every(w => rUser.bio.toLowerCase().includes(w));
-            if (hasAll) {
-                u.verified = true;
-                const token = "SL_TOKEN_" + Math.random().toString(36).substr(2) + Date.now().toString(36);
-                u.token = token;
-                return res.json({
-                    success: true,
-                    username,
-                    role: u.role,
-                    token,
-                    message: "Identity Verified via Roblox Bio!"
-                });
-            } else {
-                return res.status(400).json({
-                    success: false,
-                    error: `Bio does not contain '${u.challenge}'. Please save on Roblox and retry.`
-                });
+            // Create facility
+            if (parts.length === 1 && method === 'POST') {
+                const name = String(body.name || '').trim().slice(0, 60);
+                const siteId = String(body.siteId || '').trim().replace(/[^0-9]/g, '');
+                if (!name) return send(400, { error: 'Facility name is required.' });
+                if (!siteId) return send(400, { error: 'Roblox Game / Place ID is required (numbers only).' });
+                const id = 'FAC-' + digits();
+                state.facilities[id] = {
+                    facility_id: id, name, site_id: siteId, owner: user.username,
+                    api_key: 'SLK_' + rid(16), blacklisted: false, created_at: new Date().toISOString()
+                };
+                addLog(id, null, 'ADMIN', 'FACILITY_CREATED', user.username, 'PORTAL', `Facility "${name}" created`, 'INFO');
+                await save(true);
+                return send(200, { facility: publicFacility(state.facilities[id], true) });
             }
-        });
-        return;
+
+            const fac = state.facilities[parts[1]];
+            if (!fac) return send(404, { error: 'Facility not found.' });
+            if (!canAccess(user, fac)) return send(403, { error: 'You do not have access to this facility.' });
+            const owner = fac.owner === user.username;
+
+            if (parts.length === 2 && method === 'GET') return send(200, { facility: publicFacility(fac, owner) });
+
+            if (parts.length === 2 && method === 'DELETE') {
+                Object.keys(state.systems).forEach(k => { if (state.systems[k].facility_id === fac.facility_id) delete state.systems[k]; });
+                delete state.facilities[fac.facility_id];
+                await save(true);
+                return send(200, { success: true });
+            }
+
+            if (parts[2] === 'regenerate-key' && method === 'POST') {
+                if (!owner) return send(403, { error: 'Only the owner can rotate the key.' });
+                fac.api_key = 'SLK_' + rid(16);
+                addLog(fac.facility_id, null, 'ADMIN', 'API_KEY_ROTATED', user.username, 'PORTAL', 'Facility API key rotated', 'WARN');
+                await save(true);
+                return send(200, { api_key: fac.api_key });
+            }
+
+            if (parts[2] === 'systems' && method === 'POST') {
+                const type = String(body.type || '').toUpperCase();
+                if (!COMMANDS[type]) return send(400, { error: 'System type must be FIRE or SECURITY.' });
+                const count = Object.values(state.systems).filter(s => s.facility_id === fac.facility_id).length;
+                if (count >= 20) return send(400, { error: 'System limit reached (20 per facility).' });
+                const name = String(body.name || '').trim().slice(0, 60) || (type === 'FIRE' ? 'Fire Alarm Panel' : 'Security Panel');
+                let sid;
+                do { sid = (type === 'FIRE' ? 'F-' : 'S-') + digits(); } while (state.systems[sid]);
+                state.systems[sid] = { system_id: sid, facility_id: fac.facility_id, type, name, state: {}, blacklisted: false, created_at: new Date().toISOString() };
+                addLog(fac.facility_id, sid, type, 'SYSTEM_CREATED', user.username, 'PORTAL', `${type} system "${name}" registered`, 'INFO');
+                await save(true);
+                return send(200, { system: publicSystem(state.systems[sid]) });
+            }
+
+            if (parts[2] === 'systems' && parts[3] && method === 'DELETE') {
+                const s = state.systems[parts[3]];
+                if (!s || s.facility_id !== fac.facility_id) return send(404, { error: 'System not found.' });
+                delete state.systems[parts[3]];
+                await save(true);
+                return send(200, { success: true });
+            }
+
+            if (parts[2] === 'logs' && method === 'GET') {
+                const t = url.searchParams.get('type');
+                const sid = url.searchParams.get('system');
+                let logs = state.logs.filter(l => l.facility_id === fac.facility_id);
+                if (t && t !== 'ALL') logs = logs.filter(l => l.system_type === t);
+                if (sid) logs = logs.filter(l => l.system_id === sid);
+                return send(200, { logs: logs.slice(0, 200) });
+            }
+
+            if (parts[2] === 'control' && method === 'POST') {
+                if (fac.blacklisted) return send(403, { error: 'Facility is blacklisted.' });
+                const s = state.systems[body.systemId];
+                if (!s || s.facility_id !== fac.facility_id) return send(404, { error: 'System not found.' });
+                if (!COMMANDS[s.type].includes(body.command)) return send(400, { error: 'Invalid command for this system type.' });
+                state.commands.push({ id: rid(6), system_id: s.system_id, command: body.command, status: 'PENDING', ts: Date.now() });
+                addLog(fac.facility_id, s.system_id, s.type, 'WEB_COMMAND', user.username, 'PORTAL', `Remote command ${body.command} sent`, 'WARN');
+                await save(true);
+                return send(200, { success: true, message: `${body.command} queued. It will run on the next sync (about 3 seconds).` });
+            }
+
+            if (parts[2] === 'blacklist' && method === 'POST') {
+                if (!isAdmin(user)) return send(403, { error: 'Administrators only.' });
+                fac.blacklisted = body.blacklisted !== false;
+                fac.blacklist_reason = fac.blacklisted ? String(body.reason || 'Blacklisted by SafeLight Central Command').slice(0, 200) : '';
+                addLog(fac.facility_id, null, 'ADMIN', fac.blacklisted ? 'BLACKLIST_ENGAGED' : 'BLACKLIST_LIFTED', user.username, 'ADMIN', fac.blacklist_reason || 'Access restored', 'CRITICAL');
+                await save(true);
+                return send(200, { success: true, blacklisted: fac.blacklisted });
+            }
+        }
+
+        return send(404, { error: 'API route not found' });
+    } catch (e) {
+        console.error(e);
+        return res.status(500).json({ error: 'Server error' });
     }
-
-    // ==========================================
-    // 8. REMOTE CONTROL DISPATCH
-    // ==========================================
-    if (pathname === '/control' && req.method === 'POST') {
-        const { facilityId, systemId, command, systemType, token } = body;
-        const validUser = Object.values(storage.users).find(u => u.token === token && u.verified);
-        if (!validUser) return res.status(401).json({ error: "Unauthorized: Verified login required." });
-
-        storage.commands.push({
-            id: storage.commands.length + 1,
-            facility_id: facilityId || "SIMP-4100-SL",
-            system_id: systemId || "",
-            system_type: systemType || "FIRE",
-            command: command,
-            status: "PENDING",
-            created_at: new Date().toISOString()
-        });
-
-        storage.logs.unshift({
-            id: storage.logs.length + 1,
-            facility_id: facilityId || "SIMP-4100-SL",
-            system_id: systemId || "",
-            system_type: systemType || "FIRE",
-            event_type: "WEB_COMMAND",
-            device_name: validUser.username,
-            point_or_zone: "WEB PORTAL",
-            details: `Dispatched remote '${command}' to ${systemType}`,
-            severity: "WARN",
-            created_at: new Date().toISOString()
-        });
-
-        return res.json({
-            success: true,
-            message: `Remote command '${command}' transmitted to site.`
-        });
-    }
-
-    // Default fallback
-    return res.status(404).json({ error: "API route not found" });
 };
